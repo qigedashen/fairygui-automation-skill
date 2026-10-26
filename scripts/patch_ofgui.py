@@ -1,138 +1,123 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-给 @openfairygui/cli 的发布器补两处与 FairyGUI 官方编辑器不一致的行为：
-
-1. 裁剪规则补上"根可达闭包"。
-2. 让 FairyGUI 编辑器的 Lua 插件真正执行（fengari Lua 5.3）。
-
-Lua 宿主依赖 fengari / fengari-interop，需与 @openfairygui/cli 同 node_modules 根：
-    npm install fengari fengari-interop
-
-用法：python patch_ofgui.py [dist_dir]
-补丁可重复执行，已打过跳过。
-"""
-
-import os
-import re
-import sys
+import os, re, sys
 
 ANCHOR = "function collectPackagePublishContext(pkg, options) {"
 MARKER = "collectRootReachableResourceIds"
 
 HELPER = """function collectRootReachableResourceIds(pkg, excludedResourceIds, seedIds) {
-\tconst resources = pkg.listResources();
-\tconst resourceById = /* @__PURE__ */ new Map(resources.map((resource) => [resource.getId(), resource]));
-\tconst included = /* @__PURE__ */ new Set();
-\tconst queue = [];
-\tconst addId = (resourceId) => {
-\t\tif (!resourceId || included.has(resourceId) || excludedResourceIds.has(resourceId)) return;
-\t\tconst resource = resourceById.get(resourceId);
-\t\tif (!resource) return;
-\t\tif (isFontResource(resource) && resource.isExternalFont()) return;
-\t\tincluded.add(resourceId);
-\t\tqueue.push(resourceId);
-\t};
-\tfor (const resource of resources) if (resource.getExported()) addId(resource.getId());
-\tfor (const resourceId of seedIds ?? []) addId(resourceId);
-\twhile (queue.length > 0) {
-\t\tconst resource = resourceById.get(queue.pop());
-\t\tif (!resource) continue;
-\t\tif (isComponentResource(resource)) {
-\t\t\tconst dependencies = { localResourceIds: /* @__PURE__ */ new Set(), packageIds: /* @__PURE__ */ new Set() };
-\t\t\tcollectComponentReferences(dependencies, pkg.getId(), resource);
-\t\t\tfor (const resourceId of dependencies.localResourceIds) addId(resourceId);
-\t\t\tcontinue;
-\t\t}
-\t\tif (isSkeletonResource(resource)) {
-\t\t\tfor (const requiredId of resource.getRequireIds()) addId(requiredId);
-\t\t\tcontinue;
-\t\t}
-\t\tif (isFontResource(resource)) for (const imageId of getFontDependencyImageIds(resource)) addId(imageId);
-\t}
-\treturn included;
+	const resources = pkg.listResources();
+	const resourceById = /* @__PURE__ */ new Map(resources.map((resource) => [resource.getId(), resource]));
+	const included = /* @__PURE__ */ new Set();
+	const queue = [];
+	const addId = (resourceId) => {
+		if (!resourceId || included.has(resourceId) || excludedResourceIds.has(resourceId)) return;
+		const resource = resourceById.get(resourceId);
+		if (!resource) return;
+		if (isFontResource(resource) && resource.isExternalFont()) return;
+		included.add(resourceId);
+		queue.push(resourceId);
+	};
+	for (const resource of resources) if (resource.getExported()) addId(resource.getId());
+	for (const resourceId of seedIds ?? []) addId(resourceId);
+	while (queue.length > 0) {
+		const resource = resourceById.get(queue.pop());
+		if (!resource) continue;
+		if (isComponentResource(resource)) {
+			const dependencies = { localResourceIds: /* @__PURE__ */ new Set(), packageIds: /* @__PURE__ */ new Set() };
+			collectComponentReferences(dependencies, pkg.getId(), resource);
+			for (const resourceId of dependencies.localResourceIds) addId(resourceId);
+			continue;
+		}
+		if (isSkeletonResource(resource)) {
+			for (const requiredId of resource.getRequireIds()) addId(requiredId);
+			continue;
+		}
+		if (isFontResource(resource)) for (const imageId of getFontDependencyImageIds(resource)) addId(imageId);
+	}
+	return included;
 }
 function collectPackagePublishContext(pkg, options) {"""
 
-OLD_A = """\tconst publishedResourceIds = /* @__PURE__ */ new Set();
-\tfor (const resource of resources) {
-\t\tconst resourceId = resource.getId();
-\t\tif (!resourceId || excludedResourceIds.has(resourceId)) continue;
-\t\tif (isComponentResource(resource)) {
-\t\t\tif (resource.getExported() || referencedIds.has(resourceId)) publishedResourceIds.add(resourceId);
-\t\t\tcontinue;
-\t\t}
-\t\tif (isImageResource(resource)) {
-\t\t\tif (resource.getExported() || referencedIds.has(resourceId) || pixelHitTestImageIds.has(resourceId)) publishedResourceIds.add(resourceId);
-\t\t\tcontinue;
-\t\t}
-\t\tif (isMovieClipResource(resource) || isSoundResource(resource)) {
-\t\t\tif (resource.getExported() || referencedIds.has(resourceId)) publishedResourceIds.add(resourceId);
-\t\t\tcontinue;
-\t\t}
-\t\tif (isMiscResource(resource) || isSkeletonResource(resource)) {
-\t\t\tif (resource.getExported() || referencedIds.has(resourceId)) publishedResourceIds.add(resourceId);
-\t\t\tcontinue;
-\t\t}
-\t\tif (isFontResource(resource)) {
-\t\t\tif (!resource.isExternalFont() && (resource.getExported() || referencedIds.has(resourceId))) publishedResourceIds.add(resourceId);
-\t\t\tcontinue;
-\t\t}
-\t\tif (resource.getExported() || referencedIds.has(resourceId)) publishedResourceIds.add(resourceId);
-\t}
+OLD_A = """	const publishedResourceIds = /* @__PURE__ */ new Set();
+	for (const resource of resources) {
+		const resourceId = resource.getId();
+		if (!resourceId || excludedResourceIds.has(resourceId)) continue;
+		if (isComponentResource(resource)) {
+			if (resource.getExported() || referencedIds.has(resourceId)) publishedResourceIds.add(resourceId);
+			continue;
+		}
+		if (isImageResource(resource)) {
+			if (resource.getExported() || referencedIds.has(resourceId) || pixelHitTestImageIds.has(resourceId)) publishedResourceIds.add(resourceId);
+			continue;
+		}
+		if (isMovieClipResource(resource) || isSoundResource(resource)) {
+			if (resource.getExported() || referencedIds.has(resourceId)) publishedResourceIds.add(resourceId);
+			continue;
+		}
+		if (isMiscResource(resource) || isSkeletonResource(resource)) {
+			if (resource.getExported() || referencedIds.has(resourceId)) publishedResourceIds.add(resourceId);
+			continue;
+		}
+		if (isFontResource(resource)) {
+			if (!resource.isExternalFont() && (resource.getExported() || referencedIds.has(resourceId))) publishedResourceIds.add(resourceId);
+			continue;
+		}
+		if (resource.getExported() || referencedIds.has(resourceId)) publishedResourceIds.add(resourceId);
+	}
 """
-NEW_A = """\tconst publishedResourceIds = collectRootReachableResourceIds(pkg, excludedResourceIds, pixelHitTestImageIds);
-"""
-
-OLD_C = """\t\t\tconst referencedIds = collectPackageResourceReferences(pkg).localResourceIds;
-\t\t\tfor (const res of orderedAllResources) {
-\t\t\t\tif (isSkeletonResource(res) && referencedIds.has(res.getId())) {
-\t\t\t\t\tfor (const requiredId of res.getRequireIds()) if (requiredId) referencedIds.add(requiredId);
-\t\t\t\t}
-\t\t\t\tif (isFontResource(res)) for (const imageId of getFontDependencyImageIds(res)) referencedIds.add(imageId);
-\t\t\t}
-"""
-NEW_C = """\t\t\tconst referencedIds = collectRootReachableResourceIds(pkg, new Set(pkg.getSourceAtlasSettings().excludedResourceIds));
+NEW_A = """	const publishedResourceIds = collectRootReachableResourceIds(pkg, excludedResourceIds, pixelHitTestImageIds);
 """
 
-NODE_OLD = """\t\tif (!manifest.main) {
-\t\t\tconst error = /* @__PURE__ */ new Error(`Codegen plugin \"${manifest.name}\" is missing package.json main.`);
-\t\t\tif (manifest.required) throw error;
-\t\t\tdoc.getLogger().warn(`publish: Plugin \"${manifest.name}\" was skipped: ${error.message}`);
-\t\t\tcontinue;
-\t\t}
+OLD_C = """			const referencedIds = collectPackageResourceReferences(pkg).localResourceIds;
+			for (const res of orderedAllResources) {
+				if (isSkeletonResource(res) && referencedIds.has(res.getId())) {
+					for (const requiredId of res.getRequireIds()) if (requiredId) referencedIds.add(requiredId);
+				}
+				if (isFontResource(res)) for (const imageId of getFontDependencyImageIds(res)) referencedIds.add(imageId);
+			}
 """
-NODE_SKIP = """\t\tif (/\\.lua$/iu.test(manifest.main)) {
-\t\t\tdoc.getLogger().warn(`publish: Plugin \"${manifest.name}\" was skipped: FairyGUI editor Lua plugins are not supported`);
-\t\t\tcontinue;
-\t\t}
+NEW_C = """			const referencedIds = collectRootReachableResourceIds(pkg, new Set(pkg.getSourceAtlasSettings().excludedResourceIds));
 """
-NODE_LOADER = """\t\tif (/\\.lua$/iu.test(manifest.main)) {
-\t\t\tconst luaMainPath = resolvePluginMain(path, pluginDir, manifest);
-\t\t\ttry {
-\t\t\t\tconst luaHost = await loadLuaPluginHost();
-\t\t\t\tconst plugin = await luaHost.createLuaPlugin({ mainPath: luaMainPath, pluginDir, doc, manifest });
-\t\t\t\tplugins.push({ name: manifest.name, plugin, failureMode: manifest.required ? \"abort\" : manifest.failureMode });
-\t\t\t} catch (error) {
-\t\t\t\tif (!manifest.required && manifest.failureMode === \"warn\") {
-\t\t\t\t\tdoc.getLogger().warn(`publish: Plugin \"${manifest.name}\" was skipped: ${formatPluginError(error)}`);
-\t\t\t\t\tcontinue;
-\t\t\t\t}
-\t\t\t\tthrow new Error(`publish: Failed to load Lua plugin \"${manifest.name}\": ${formatPluginError(error)}`);
-\t\t\t}
-\t\t\tcontinue;
-\t\t}
+
+NODE_OLD = """		if (!manifest.main) {
+			const error = /* @__PURE__ */ new Error(`Codegen plugin "${manifest.name}" is missing package.json main.`);
+			if (manifest.required) throw error;
+			doc.getLogger().warn(`publish: Plugin "${manifest.name}" was skipped: ${error.message}`);
+			continue;
+		}
+"""
+NODE_SKIP = """		if (/\.lua$/iu.test(manifest.main)) {
+			doc.getLogger().warn(`publish: Plugin "${manifest.name}" was skipped: FairyGUI editor Lua plugins are not supported`);
+			continue;
+		}
+"""
+NODE_LOADER = """		if (/\.lua$/iu.test(manifest.main)) {
+			const luaMainPath = resolvePluginMain(path, pluginDir, manifest);
+			try {
+				const luaHost = await loadLuaPluginHost();
+				const plugin = await luaHost.createLuaPlugin({ mainPath: luaMainPath, pluginDir, doc, manifest });
+				plugins.push({ name: manifest.name, plugin, failureMode: manifest.required ? "abort" : manifest.failureMode });
+			} catch (error) {
+				if (!manifest.required && manifest.failureMode === "warn") {
+					doc.getLogger().warn(`publish: Plugin "${manifest.name}" was skipped: ${formatPluginError(error)}`);
+					continue;
+				}
+				throw new Error(`publish: Failed to load Lua plugin "${manifest.name}": ${formatPluginError(error)}`);
+			}
+			continue;
+		}
 """
 
 LOAD_PLUGINS_ANCHOR = "async function loadPlugins(doc, pluginsDir) {"
 LUA_HOST_MARKER = "lua-plugin-host.cjs"
 HOST_HELPER_ESM = """async function loadLuaPluginHost() {
-\tconst mod = await import(new URL("./lua-plugin-host.cjs", import.meta.url).href);
-\treturn mod.default ?? mod;
+	const mod = await import(new URL("./lua-plugin-host.cjs", import.meta.url).href);
+	return mod.default ?? mod;
 }
 async function loadPlugins(doc, pluginsDir) {"""
 HOST_HELPER_CJS = """function loadLuaPluginHost() {
-\treturn require("./lua-plugin-host.cjs");
+	return require("./lua-plugin-host.cjs");
 }
 async function loadPlugins(doc, pluginsDir) {"""
 
@@ -144,14 +129,12 @@ def find_publish_bundles(root):
             if re.match(r"^publish-.+\.(cjs|js|mjs)$", n): found.append(os.path.join(dp, n))
     return sorted(found)
 
-
 def find_node_adapters(root):
     found = []
     for dp, _dn, fns in os.walk(root):
         for n in fns:
             if n in ("node.js", "node.cjs", "node.mjs"): found.append(os.path.join(dp, n))
     return sorted(found)
-
 
 def resolve_root(arg):
     cands = []
@@ -167,7 +150,6 @@ def resolve_root(arg):
         if os.path.basename(os.path.normpath(c)) == "dist" and os.path.isdir(c): return c
     return None
 
-
 def patch_file(p):
     t = open(p, encoding="utf-8").read()
     if MARKER in t: return "skipped"
@@ -175,7 +157,6 @@ def patch_file(p):
     t = t.replace(ANCHOR, HELPER, 1).replace(OLD_A, NEW_A, 1).replace(OLD_C, NEW_C, 1)
     open(p, "w", encoding="utf-8", newline="\n").write(t)
     return "patched"
-
 
 def patch_node_adapter(p):
     t = open(p, encoding="utf-8").read()
@@ -189,7 +170,6 @@ def patch_node_adapter(p):
     open(p, "w", encoding="utf-8", newline="\n").write(t)
     return "patched"
 
-
 def copy_lua_host(dist):
     here = os.path.dirname(os.path.abspath(__file__))
     src = os.path.join(here, "lua-plugin-host.cjs")
@@ -200,11 +180,9 @@ def copy_lua_host(dist):
     open(tgt, "wb").write(data)
     return "copied"
 
-
 def has_fengari(dist):
     m = os.path.normpath(os.path.join(dist, "..", "..", ".."))
     return os.path.isdir(os.path.join(m, "fengari")) and os.path.isdir(os.path.join(m, "fengari-interop"))
-
 
 def main():
     dist = resolve_root(sys.argv[1] if len(sys.argv) > 1 else None)

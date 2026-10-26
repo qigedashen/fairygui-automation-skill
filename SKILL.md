@@ -2,7 +2,7 @@
 name: fairygui-automation
 author: qigedashen
 version: 1.1.0
-description: FairyGUI UI 自动化发布工具，基于 @openfairygui/cli (ofgui) 实现无头发布，含裁剪规则与 Lua 插件执行两处补丁。
+description: FairyGUI UI 自动化发布工具，基于 @openfairygui/cli (ofgui) 实现无头发布，含裁剪规则与 Lua 插件执行两处补丁。用户要求发布 FairyGUI 包、运行编辑器 Lua 插件、修复 ofgui 与官方编辑器产物差异、或验证 ItemIcon 过滤等场景时使用。不要用于编辑器内可视化编辑或后端 Lua 业务脚本。
 ---
 
 # FairyGUI 自动化工具
@@ -20,16 +20,23 @@ ofgui 原生发布器与 FairyGUI 官方编辑器有两处行为差异，已在�
 
 | 文件 | 作用 |
 |---|---|
-| `scripts/patch_ofgui.py` | 一次性把两处修复打进任意 ofgui 安装，可重复执行（已打过跳过） |
-| `scripts/lua-plugin-host.cjs` | fengari 实现的 Lua 插件宿主，补丁会复制进 ofgui 的 dist |
-| `scripts/publish.ps1` | 一键发布脚本：打补丁 -> 设环境变量 -> ofgui publish |
+| `scripts/patch_ofgui.py` | 一次性把两处修复打进任意 ofgui 安装，可重复执行（已打过跳过）。**已随技能打包** |
+| `scripts/lua-plugin-host.cjs` | fengari 实现的 Lua 插件宿主，补丁会复制进 ofgui 的 dist。**已随技能打包** |
+| `scripts/publish.ps1` | 一键发布脚本：打补丁 → 设环境变量 → ofgui publish |
 | `9963d_rxjh_fgui_project/plugins/996Extend/main.lua` | 项目的编辑器 Lua 插件入口（需项目自带） |
 | `9963d_rxjh_fgui_project` | FGUI 工程根（含 `.fairy` 标识文件） |
+| `client/.../FGUIExport/` | 官方编辑器产物目录，用于比对 |
 
 ## 标准工作流
 
 ### 1. 定位 ofgui 安装
 
+```powershell
+# 仓库内没有内置 ofgui，需指定 node_modules 或 dist 路径
+# 常见：<持久化目录>\node_modules\@openfairygui\functions\dist
+```
+
+如果未安装，先装：
 ```powershell
 npm install @openfairygui/cli fengari fengari-interop
 ```
@@ -38,16 +45,23 @@ npm install @openfairygui/cli fengari fengari-interop
 ### 2. 打补丁
 
 ```powershell
-python <skill_dir>\scripts\patch_ofgui.py <node_modules 或 dist 路径>
+python <技能目录>\scripts\patch_ofgui.py <node_modules 或 dist 路径>
 ```
 
-输出：`patched` / `skipped`（幂等）/ `anchor-mismatch`（ofgui 版本变了别继续）/ `WARN: 缺少 fengari`。
+输出含义：
+- `patched` — 该文件首次打补丁成功
+- `skipped` — 已打过，跳过（幂等）
+- `anchor-mismatch` — ofgui 版本可能已变，锚点不匹配，**不要继续**，需核对补丁逻辑
+- `WARN: 缺少 fengari / fengari-interop` — 装上后 Lua 插件才能跑
 
 ### 3. 配置插件运行时参数
 
-996Extend 通过 `CS.UnityEngine.PlayerPrefs.GetString("Item_Path")` 读 Item 配置。宿主支持：
+996Extend 插件通过 `CS.UnityEngine.PlayerPrefs.GetString("Item_Path")` 读取 Item 配置路径。CLI 没有 PlayerPrefs，宿主支持两种取值方式：
+
 - 环境变量（优先）：`OFGUI_ITEM_PATH`、`OFGUI_ITEMEQUIP_PATH`（规则：`OFGUI_` + key 大写，非字母数字转 `_`）
 - 插件目录 JSON：`plugins/996Extend/ofgui-prefs.json`
+
+本项目的 Item 配置在：`client/.../Lua/game_config/Item.lua`、`ItemEquip.lua`。
 
 ### 4. 发布
 
@@ -58,7 +72,7 @@ $env:OFGUI_ITEMEQUIP_PATH = "<repo>\client\rjengineb_Data\StreamingAssets\Bundle
 node <ofgui>\node_modules\@openfairygui\cli\bin\cli.cjs publish <FGUI工程路径> -p <包名> -o <输出目录>
 ```
 
-成功标志：
+成功标志（日志）：
 ```
 publish: [996Extend] ItemIcon: exported 2365 -> 1995
 publish: [996Extend] onPublishStart handled by Lua
@@ -67,54 +81,63 @@ atlas: Packed N images into M atlas(es) for package "Bag".
 
 ## 验证方法
 
-- **产物一致性**：比对 `*_fui.bytes` 中资源名集合完整（atlas 数量和 PNG 大小可能不同，不是缺陷）。
-- **插件过滤结果**：日志 `exported <before> -> <after>` 与独立脚本算出的期望值一致。
-- **钩子时序**：`onPublishStart` 在 `publishedResourceIds` 计算**之前**执行，Lua 侧改 `item.exported` 能真正改变发布集。
+### 产物一致性
+- 比对 `*_fui.bytes` 大小与 `*_atlas*.png` 数量/大小。ofgui 的图集打包算法与编辑器不完全相同，**atlas 数量和 PNG 大小可能不同**，这不是缺陷。
+- 关键校验：`*_fui.bytes` 中应包含的资源名集合是否完整。用 Python 正则提取 `\d{6}` 名称并与预期集合比对，`missing_expected` 应为 0。
+
+### 插件过滤结果
+- 日志中的 `exported <before> -> <after>` 应与独立脚本（解析 package.xml + Item.lua/ItemEquip.lua 的 `Looks` 字段）算出的期望值一致。
+- 本项目 ItemIcon 期望：1940 个命中图标 + 55 个非数字项 = 1995 exported。
+
+### 钩子时序
+`onPublishStart` 在 `publishedResourceIds` 计算**之前**执行，因此在钩子里改 `item.exported` 能真正改变最终发布集。
 
 ## 编码与路径注意事项
 
-- 后端 Lua GBK，前端 Lua UTF-8，不要混淆。本脚本 UTF-8。
-- 路径含 `[]` 时 PowerShell 用 `-LiteralPath`。
+- **后端 Lua 是 GBK，前端 Lua 是 UTF-8**，不要混淆。本技能涉及的 ofgui 宿主（`*.cjs`）和补丁脚本（`*.py`）是 UTF-8。
+- 仓库路径含 `[7.1.3版7.1.1资源]`，Python `open`/`os.walk` 原生支持；PowerShell 操作需用 `-LiteralPath` 避免 `[ ]` 被当通配符。
+- 不要用 `Edit`/`Write` 工具直接改后端 Lua 文件，会破坏 GBK 编码。
 
 ## 故障排查
 
 | 现象 | 原因 | 处理 |
 |---|---|---|
-| `module 'xxx' not found` | Lua 插件 `require` 路径解析失败 | 检查 `PluginPath` 与宿主 `resolveModule` 候选（插件目录/工程目录/上级目录） |
-| `GetString` 拿到空串 | fengari-interop 把第一个参数当 this | 宿主已兼容点/冒号调用；确认环境变量或 `ofgui-prefs.json` 已设 |
-| `anchor-mismatch` | ofgui 升级后产物结构变化 | 对照 `patch_ofgui.py` 的 `ANCHOR`/`OLD_A`/`OLD_C` 重新核对 |
+| `module 'xxx' not found` | Lua 插件的 `require` 路径解析失败 | 检查 `PluginPath` 与宿主的 `resolveModule` 候选路径（插件目录/工程目录/上级目录） |
+| `GetString` 拿到空串 | 点调用陷阱：fengari-interop 把第一个参数当 this | 宿主已兼容点/冒号调用；确认环境变量或 `ofgui-prefs.json` 已设 |
+| `anchor-mismatch` | ofgui 升级后产物结构变化 | 对照 `patch_ofgui.py` 中的 `ANCHOR`/`OLD_A`/`OLD_C` 重新核对 |
 | 发布集比编辑器多 | 根可达闭包补丁未生效 | 确认 `publish-*.js` 含 `collectRootReachableResourceIds` |
 | Lua 插件未执行 | `node.js`/`node.cjs` 未打 Lua 补丁或缺 fengari | 确认含 `loadLuaPluginHost`，且同 node_modules 根有 fengari/fengari-interop |
 
 ---
 
-## 官方参考文档索引（docs/）
+## 官方参考文档索引
+
+本技能 `docs/` 目录下已固化 FairyGUI 官方文档的结构化速查版，与 ofgui 补丁工作流直接相关时优先查阅本地速查，否则跳官方文档：
 
 | 本地文件 | 官方源 | 覆盖内容 |
 |---|---|---|
 | `docs/editor-reference.md` | https://fairygui.com/docs/editor/ | 编辑器项目结构、发布模式、导出规则、控制器/Gear、快捷键 |
-| `docs/unity-sdk-reference.md` | https://fairygui.com/docs/unity/ + special/ | AddPackage 四种方式、UIPanel vs CreateObject、PaintMode、宏开关、DrawCall 优化、SDK 源码结构 |
-| `docs/faq-troubleshooting.md` | https://fairygui.com/docs/faq/ | 官方 FAQ + ofgui/补丁特有问题 + 社区 7 条独有模式 |
-| `docs/api-type-index.md` | https://fairygui.com/docs/api/ | 241 类型 3022 成员速查 |
+| `docs/unity-sdk-reference.md` | https://fairygui.com/docs/unity/ + https://fairygui.com/docs/unity/special/ | AddPackage 四种方式、UIPanel vs CreateObject、PaintMode、宏开关、DrawCall 优化 |
+| `docs/faq-troubleshooting.md` | https://fairygui.com/docs/faq/ | 官方 FAQ + ofgui/补丁特有问题 + 社区兜底入口 |
+| `docs/api-type-index.md` | https://fairygui.com/docs/api/ | 241 类型 3022 成员速查，常用类型带说明 |
 
-补充链接：
-- Unity SDK 仓库: https://github.com/fairygui/FairyGUI-unity （Unity 5.6+ / MIT / FairyBatching）
-- 问题兜底社区: https://ask.layabox.com/?q=FairyGUI （Flarum，谷主本人回复）
+官方源补充：
+- **Unity SDK 仓库**：https://github.com/fairygui/FairyGUI-unity （Unity 5.6+，MIT，核心 FairyBatching 技术）
+- **问题兜底社区**：https://ask.layabox.com/ （Flarum 论坛，含 FairyGUI 标签，谷主本人回复）
 
 ## 场景 → 文档交叉引用
 
 | 你要做的事 | 查哪里 |
 |---|---|
-| 首次配置 / 打补丁 / 发布 | 本 SKILL.md "标准工作流" |
-| 理解 .fairy / assets / 包目录 | `docs/editor-reference.md` §一 |
-| 选择 UIPanel vs CreateObject | `docs/unity-sdk-reference.md` §二 |
-| AddPackage 四种方式 | `docs/unity-sdk-reference.md` §一 |
-| FairyGUI-unity SDK 源码模块 | `docs/unity-sdk-reference.md` §七 |
-| Unity 显示不正常（白屏/没图/错乱） | `docs/faq-troubleshooting.md` §二 |
+| 首次配置 ofgui 环境 / 打补丁 / 发布 | 本 SKILL.md 的"标准工作流" |
+| 理解 .fairy / assets / 包目录结构 | `docs/editor-reference.md` §一 |
+| 确认包设置了"导出"，排查 ofgui 多发布问题 | `docs/editor-reference.md` §二 + 本 SKILL.md 的根可达闭包补丁 |
+| 选择 UIPanel 还是 CreateObject 创建 UI | `docs/unity-sdk-reference.md` §二 |
+| AddPackage 四种加载方式（Resources / AB / 自定义） | `docs/unity-sdk-reference.md` §一 |
+| Unity 里 FairyGUI 显示不正常（白屏/错乱/没图） | `docs/faq-troubleshooting.md` §二 |
 | 包加载失败（invalid package / atlas not found） | `docs/faq-troubleshooting.md` §一 |
-| DrawCall 太高 / 深度错乱 | `docs/faq-troubleshooting.md` §四 + `docs/unity-sdk-reference.md` §五 |
-| 宏开关新功能 | `docs/unity-sdk-reference.md` §四 "平台宏" |
-| Lua 插件在 ofgui 跑不起来 | 本 SKILL.md + `docs/faq-troubleshooting.md` §八 |
-| Mac batchmode 闪退 | `docs/faq-troubleshooting.md` §九 |
-| 查 API 参数 | `docs/api-type-index.md` -> https://fairygui.com/docs/api/ |
-| 官方 FAQ 没覆盖 | `docs/faq-troubleshooting.md` §九 |
+| DrawCall 太高 / FairyBatching 深度错乱 | `docs/faq-troubleshooting.md` §四 + `docs/unity-sdk-reference.md` §五 |
+| 需要用宏开关新功能（Input System / WebGL / 测试） | `docs/unity-sdk-reference.md` §四 "平台宏" |
+| Lua 插件在 ofgui 里跑不起来 | 本 SKILL.md 的 Lua 插件执行 + `docs/faq-troubleshooting.md` §八 |
+| 查具体 API 参数（Controller / Window / Event） | `docs/api-type-index.md` → 跳转 https://fairygui.com/docs/api/ |
+| 官方 FAQ 没覆盖到 → 社区兜底 | `docs/faq-troubleshooting.md` §九 |
